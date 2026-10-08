@@ -18,7 +18,6 @@ return new class extends Migration
             $table->timestamp('created_at');
 
             $table->index(['junction_id', 'created_at']);
-            $table->foreign('junction_id')->references('id')->on('junctions')->cascadeOnDelete();
         });
     }
 

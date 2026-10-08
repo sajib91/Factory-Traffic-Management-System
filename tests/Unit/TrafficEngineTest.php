@@ -130,13 +130,22 @@ class TrafficEngineTest extends TestCase
         $this->assertCount(0, $result->effects());
     }
 
-    public function test_only_automatic_mode_is_supported(): void
+    public function test_engine_rejects_degraded_mode(): void
     {
-        $state = JunctionState::initial('A', $this->config, $this->clock->now(), Mode::MANUAL);
+        $state = JunctionState::initial('A', $this->config, $this->clock->now(), Mode::DEGRADED);
 
         $this->expectException(\LogicException::class);
 
         $this->engine->tick($state, QueueSnapshot::of(PhaseQueue::empty(), PhaseQueue::empty()), $this->clock->now());
+    }
+
+    public function test_controller_ack_is_an_idle_noop(): void
+    {
+        $state = JunctionState::initial('A', $this->config, $this->clock->now());
+        $result = $this->engine->handleControllerAck($state, $state->desiredSignals);
+
+        $this->assertSame($state, $result->state);
+        $this->assertCount(0, $result->effects());
     }
 
     private function tickAfter(

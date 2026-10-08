@@ -28,6 +28,9 @@ class Junction extends Model
             'manual' => 'array',
             'last_sequences' => 'array',
             'version' => 'integer',
+            'pending' => 'array',
+            'device_status' => 'array',
+            'device_warning' => 'boolean',
         ];
     }
 }

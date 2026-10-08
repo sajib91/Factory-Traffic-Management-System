@@ -1,66 +1,89 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Factory Traffic Management System
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+## Setup
 
-## About Laravel
+```sh
+composer install
+cp .env.example .env
+php artisan key:generate
+# Set DB_CONNECTION=mysql, DB_DATABASE=factory_traffic, DB_USERNAME and DB_PASSWORD in .env
+php artisan migrate
+php artisan db:seed
+php artisan serve
+php artisan traffic:run
+```
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+Open `http://127.0.0.1:8001/`. The dashboard is for junction `A`; the API is under `/api`.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Demo Scenarios
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+1. **Normal:** send a `VEHICLE_ARRIVED` event, wait for the automatic tick, ACK the pending command, then clear it.
+2. **Priority:** queue a truck and verify the scheduler selects the weighted/oldest phase.
+3. **Emergency:** send `vehicle_type: EMERGENCY`; observe preemption, ACK transitions, then clear the emergency vehicle.
+4. **Manual:** use Green N/S or Green E/W, then Return to Automatic.
+5. **Duplicate:** resend the same `event_id`; the first response is `201`, the duplicate is idempotent `200`.
+6. **Clearance:** send arrival then matching clear; a clear without an arrival returns `422`.
+7. **Controller failure:** set the controller `OFFLINE`; the junction becomes DEGRADED and requests ALL_RED.
+8. **Restart:** stop and restart `traffic:run`; recovery marks actual signals UNKNOWN, supersedes pending commands, sends ALL_RED, and waits for its ACK.
+9. **Concurrent:** send events for one junction concurrently; row locking and sequence cursors serialize them.
 
-## Learning Laravel
+## API
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/junctions` | List junctions |
+| POST | `/api/junctions` | Create a junction |
+| GET | `/api/junctions/{id}` | Read complete junction state |
+| GET | `/api/junctions/{id}/status` | Read live status: desired/actual signals, queues, mode, phase, controller, emergency, manual, pending command, alerts |
+| POST | `/api/sensor-events` | Idempotent arrival/clear event |
+| POST | `/api/junctions/{id}/commands` | Manual green or return to automatic |
+| POST | `/api/controller-events` | ACK or controller ONLINE/OFFLINE event |
+| GET | `/api/junctions/{id}/history?limit=50&type=` | Audit history |
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+Responses use `{"data": ...}`. Errors use `{"error":{"code":"...","message":"...","details":...}}`. Status codes are `201` for creation/new events, `200` for duplicate events, `202` for accepted commands/controller events, `404` for an unknown junction, `409` for a command forbidden by mode, and `422` for invalid input or event state.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Scheduling
 
-## Laravel Sponsors
+The engine keeps a per-junction phase timer and queue snapshot. It weights vehicle classes, considers oldest waiting time, enforces minimum green, yellow, and all-red intervals, and only permits configured non-conflicting greens. Green commands are ACK-gated; timeouts retry and then degrade to ALL_RED.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+```text
+AUTOMATIC -> YELLOW -> ALL_RED -> GREEN -> YELLOW -> ALL_RED
+     |          ^          ^         |
+     |          |          |         |
+  EMERGENCY ----+       MANUAL <----+
+     |                         |
+     +--------> AUTOMATIC <-----+
 
-### Premium Partners
+any controller failure -> DEGRADED -> ALL_RED ACK -> AUTOMATIC
+restart -> DEGRADED/ALL_RED -> recovery ACK -> AUTOMATIC
+```
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[WebReinvent](https://webreinvent.com/)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Jump24](https://jump24.co.uk)**
-- **[Redberry](https://redberry.international/laravel/)**
-- **[Active Logic](https://activelogic.com)**
-- **[byte5](https://byte5.de)**
-- **[OP.GG](https://op.gg)**
+## Consistency and Recovery
 
-## Contributing
+All writes for a junction run through `TrafficService` in a database transaction with `lockForUpdate()`. Sensor event IDs are stored in `processed_events`; duplicate delivery is harmless. Queues, processed events, and audit history are never reset. `traffic:recover` sets actual signals to UNKNOWN, marks pending controller commands SUPERSEDED, sets DEGRADED and desired ALL_RED, persists a new command, and writes `RECOVERY_STARTED`. Its ACK resets the ALL_RED step timer and resumes AUTOMATIC.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Assumptions / Questions / Requirement Issues
 
-## Code of Conduct
+- Commands currently address a phase through `GREEN_NS` or `GREEN_EW`; confirm whether the contract requires per-direction commands or per-junction phase commands.
+- `occurred_at` is interpreted as an ISO/date timestamp and stale events older than the configured window are rejected.
+- Emergency preemption takes precedence over manual control; manual commands are rejected during EMERGENCY and DEGRADED.
+- A conflict means more than one configured phase has GREEN signals at once; EAST/WEST are one configured phase.
+- ACK timeout is 10 seconds, with two retries, then DEGRADED.
+- Requirement contradiction: “emergency EAST” implies EAST/WEST green, but the conflict wording also says both EAST and WEST turn green together. This implementation follows the configured EAST_WEST phase.
+- Manual-expiry behavior is present in the engine, but the required external expiry policy is unspecified; the configured manual override expiry is used.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## Architecture Decisions
 
-## Security Vulnerabilities
+Controllers are thin HTTP adapters. FormRequests own validation, application services own orchestration, the domain engine owns sequencing, Eloquent models own persistence, and the Blade page only renders API state. Polling was chosen for a small local operator view; it is simple, robust, and adequate for two-second freshness.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## AI / Tool Usage
 
-## License
+AI assistance was used to inspect the existing Laravel/domain code, preserve its service boundary, implement API adapters and recovery behavior, generate focused tests and documentation, and run the PHP test suite. Changes were checked against the existing traffic tests and the restart recovery test.
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## What I would do next
+
+Add an MQTT controller adapter, authentication and authorization for manual control, SSE for larger deployments, Docker/XAMPP-independent setup, event replay tooling, and metrics for queue age, ACK latency, retries, and degraded time.
+
+## Assessment Coverage
+
+Normal, priority, emergency, manual, duplicate, clearance, controller failure, restart, and concurrent scenarios are covered by the feature/unit tests and the demo steps above. The restart test specifically asserts that no GREEN is desired before the recovery ACK.

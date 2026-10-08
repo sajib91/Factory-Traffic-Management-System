@@ -8,6 +8,8 @@ class ControllerCommand extends Model
 {
     protected $table = 'controller_commands';
 
+    protected $primaryKey = 'command_id';
+
     public $incrementing = false;
 
     public $keyType = 'string';

@@ -10,11 +10,17 @@ final class Result
     public function __construct(
         public readonly JunctionState $state,
         public readonly array $effects = [],
+        public readonly bool $acknowledged = false,
     ) {}
 
     public static function idle(JunctionState $state): self
     {
         return new self($state);
+    }
+
+    public static function acknowledged(JunctionState $state): self
+    {
+        return new self($state, [], true);
     }
 
     /**

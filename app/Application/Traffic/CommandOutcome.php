@@ -1,0 +1,16 @@
+<?php
+
+namespace App\Application\Traffic;
+
+enum CommandOutcome: string
+{
+    case APPLIED = 'APPLIED';
+
+    case REJECTED_INVALID_DIRECTION = 'REJECTED_INVALID_DIRECTION';
+
+    case REJECTED_DURING_EMERGENCY = 'REJECTED_DURING_EMERGENCY';
+
+    case REJECTED_DURING_DEGRADED = 'REJECTED_DURING_DEGRADED';
+
+    case NO_SUCH_JUNCTION = 'NO_SUCH_JUNCTION';
+}
